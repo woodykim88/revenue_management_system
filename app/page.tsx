@@ -1,16 +1,18 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { MonthNav } from '@/components/MonthNav'
 import { IncomeSection } from '@/components/budget/IncomeSection'
 import { BudgetTable } from '@/components/budget/BudgetTable'
+import { BudgetSaveStatus } from '@/components/budget/BudgetSaveStatus'
 import { SummaryCards } from '@/components/dashboard/SummaryCards'
 import { CategoryChart } from '@/components/dashboard/CategoryChart'
 import { PersonalSummary } from '@/components/dashboard/PersonalSummary'
 import { ScheduleView } from '@/components/ScheduleView'
 import { useBudgetSummary } from '@/hooks/useBudgetSummary'
+import { useBudgetDraft } from '@/hooks/useBudgetDraft'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { LogOut } from 'lucide-react'
@@ -39,6 +41,12 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('dashboard')
   const [copyDialogOpen, setCopyDialogOpen] = useState(false)
+
+  // 예산편성 탭 통합 저장 상태
+  const draft = useBudgetDraft()
+
+  // IncomeSection의 "지금 저장" 함수를 바깥에서 호출하기 위한 ref
+  const incomeSaveNowRef = useRef<(() => Promise<void>) | null>(null)
 
   const summary = useBudgetSummary(expenses, month?.total_income ?? 0)
 
@@ -124,7 +132,18 @@ export default function HomePage() {
 
     if (prevItems && prevItems.length > 0) {
       const newItems = prevItems.map(
-        ({ id: _id, month_id: _mid, created_at: _c, updated_at: _u, ...rest }: PlannedExpense & { id: string; month_id: string; created_at: string; updated_at: string }) => ({
+        ({
+          id: _id,
+          month_id: _mid,
+          created_at: _c,
+          updated_at: _u,
+          ...rest
+        }: PlannedExpense & {
+          id: string
+          month_id: string
+          created_at: string
+          updated_at: string
+        }) => ({
           ...rest,
           month_id: newMonth.id,
           status: 'planned' as const,
@@ -142,6 +161,13 @@ export default function HomePage() {
     const supabase = createClient()
     await supabase.auth.signOut()
     router.push('/login')
+  }
+
+  // "지금 저장" 버튼: income debounce flush
+  async function handleManualSave() {
+    if (incomeSaveNowRef.current) {
+      await incomeSaveNowRef.current()
+    }
   }
 
   const categoryExpenses = (cat: 'savings' | 'fixed' | 'living') =>
@@ -171,8 +197,9 @@ export default function HomePage() {
           <button
             onClick={handleLogout}
             className="text-gray-400 hover:text-gray-600 transition-colors"
+            aria-label="로그아웃"
           >
-            <LogOut className="w-4 h-4" />
+            <LogOut className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
         {/* 탭 */}
@@ -250,7 +277,28 @@ export default function HomePage() {
         {/* ── 예산 편성 탭 ── */}
         {tab === 'budget' && month && (
           <>
-            <IncomeSection month={month} onUpdate={setMonth} />
+            {/* 저장 상태 바 (항상 상단 고정) */}
+            <div className="sticky top-[88px] z-10">
+              <BudgetSaveStatus
+                status={draft.saveStatus}
+                lastSavedAt={draft.lastSavedAt}
+                saveError={draft.saveError}
+                onSave={handleManualSave}
+              />
+            </div>
+
+            {/* 수입 섹션 */}
+            <IncomeSection
+              month={month}
+              onUpdate={setMonth}
+              onDirty={draft.markDirty}
+              onSaving={draft.markSaving}
+              onSaved={draft.markSaved}
+              onError={draft.markError}
+              saveNowRef={incomeSaveNowRef}
+            />
+
+            {/* 카테고리별 예산 테이블 */}
             {(['savings', 'fixed', 'living'] as const).map((cat) => (
               <BudgetTable
                 key={cat}
@@ -263,6 +311,10 @@ export default function HomePage() {
                     ...updated,
                   ])
                 }
+                onDirty={draft.markDirty}
+                onSaving={draft.markSaving}
+                onSaved={draft.markSaved}
+                onError={draft.markError}
               />
             ))}
           </>
@@ -299,10 +351,12 @@ function UpcomingPayments({ expenses }: { expenses: PlannedExpense[] }) {
       {upcoming.map((item) => (
         <div key={item.id} className="flex items-center justify-between text-sm py-1">
           <div className="flex items-center gap-2">
-            <span className="text-xs text-blue-600 font-medium w-10">{item.billing_date}일</span>
+            <span className="text-xs text-blue-600 font-medium tabular-nums w-10">
+              {item.billing_date}일
+            </span>
             <span className="text-gray-800">{item.item_name}</span>
           </div>
-          <span className="font-semibold text-gray-900">{formatKRW(item.amount)}</span>
+          <span className="font-semibold text-gray-900 tabular-nums">{formatKRW(item.amount)}</span>
         </div>
       ))}
     </div>
